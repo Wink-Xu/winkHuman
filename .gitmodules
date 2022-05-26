@@ -1,0 +1,3 @@
+[submodule "train_code/Yolov5_DeepSort_OSNet"]
+	path = train_code/Yolov5_DeepSort_OSNet
+	url = https://github.com/mikel-brostrom/Yolov5_DeepSort_OSNet
