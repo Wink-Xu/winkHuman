@@ -1,3 +1,6 @@
 [submodule "train_code/Yolov5_DeepSort_OSNet"]
 	path = train_code/Yolov5_DeepSort_OSNet
 	url = https://github.com/mikel-brostrom/Yolov5_DeepSort_OSNet
+[submodule "train_code/mmskeleton"]
+	path = train_code/mmskeleton
+	url = https://github.com/open-mmlab/mmskeleton
