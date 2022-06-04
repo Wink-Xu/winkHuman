@@ -8,6 +8,7 @@ todo list：
 2. 之前没搞过检测，最近把yolo+deepsort搞清楚。
 3. 如何服务化，服务化是在做什么，torchServe Triron 搞清楚
 4. GCN行人行为分析网络，搞清楚是怎么做的。
+5. 每个网络怎么训练的，用了什么数据，数据怎么标注
 
 ## 多目标跟踪
 yolo + deepsort
@@ -21,9 +22,11 @@ This part of code refers to https://github.com/JDAI-CV/fast-reid
 ## 行人属性识别
 This part of code refers to https://github.com/JDAI-CV/fast-reid
  strongBaseline
+只有性别 年龄几种属性。
 ## 行人行为分析
 This part of code refers to https://github.com/open-mmlab/mmskeleton
  ST-GCN
+只分析几种行为
 
 ## 服务化
 torchServe Triton

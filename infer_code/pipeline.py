@@ -32,14 +32,14 @@ from mtmct import mtmct_process
 parent_path = os.path.abspath(os.path.join(__file__, *(['..'] * 2)))
 sys.path.insert(0, parent_path)
 
-from python.infer import Detector, DetectorPicoDet
-from python.attr_infer import AttrDetector
-from python.keypoint_infer import KeyPointDetector
-from python.keypoint_postprocess import translate_to_ori_images
-from python.action_infer import ActionRecognizer
-from python.action_utils import KeyPointBuff, ActionVisualHelper
+from detector.detector import Detector
+# from python.attr_infer import AttrDetector
+# from python.keypoint_infer import KeyPointDetector
+# from python.keypoint_postprocess import translate_to_ori_images
+# from python.action_infer import ActionRecognizer
+# from python.action_utils import KeyPointBuff, ActionVisualHelper
 
-from pipe_utils import argsparser, print_arguments, merge_cfg, PipeTimer
+from utils.utils import argsparser, print_arguments, merge_cfg, PipeTimer
 from pipe_utils import get_test_images, crop_image_with_det, crop_image_with_mot, parse_mot_res, parse_mot_keypoint
 from python.preprocess import decode_image
 from python.visualize import visualize_box_mask, visualize_attr, visualize_pose, visualize_action
@@ -436,8 +436,7 @@ class PipePredictor(object):
             # det output format: class, score, xmin, ymin, xmax, ymax
             det_res = self.det_predictor.predict_image(
                 batch_input, visual=False)
-            det_res = self.det_predictor.filter_box(det_res,
-                                                    self.cfg['crop_thresh'])
+
             if i > self.warmup_frame:
                 self.pipe_timer.module_time['det'].end()
             self.pipeline_res.update(det_res, 'det')
@@ -749,7 +748,6 @@ def main():
 
 
 if __name__ == '__main__':
-    paddle.enable_static()
     parser = argsparser()
     FLAGS = parser.parse_args()
     FLAGS.device = FLAGS.device.upper()
