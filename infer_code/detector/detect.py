@@ -12,13 +12,18 @@ import math
 
 import sys
 # add deploy path of PadleDetection to sys.path
-parent_path = os.path.abspath(os.path.join(__file__, *(['..'])))
+parent_path = os.path.abspath(os.path.join(__file__, *(['..']*2)))
+
 sys.path.insert(0, parent_path)
 
-from utils.utils import argsparser, Timer, get_current_memory_mb, select_device
-from utils.datasets import LoadImages
-from utils.general import non_max_suppression, scale_coords, xyxy2xywh
 from detector.models.common import DetectMultiBackend
+from detector.utils import argsparser, Timer, get_current_memory_mb
+from utils.torch_utils import select_device
+from utils.datasets import LoadImages
+from utils.general import non_max_suppression, scale_coords, xyxy2xywh, increment_path
+from utils.plots import Annotator, colors, save_one_box
+import torch
+
 
 class Detector(object):
     """
@@ -72,7 +77,7 @@ class Detector(object):
     def preprocess(self, image_list):
 
         im = torch.from_numpy(image_list).to(self.device)
-        im = im.half() if half else im.float()  # uint8 to fp16/32
+        im = im.float()
         im /= 255.0  # 0 - 255 to 0.0 - 1.0
         if len(im.shape) == 3:
             im = im[None]  # expand for batch dim
@@ -102,13 +107,15 @@ class Detector(object):
         # Apply NMS
         pred = non_max_suppression(pred)
 
+
+        save_dir = increment_path(Path(self.output_dir) / 'exp', exist_ok=0) 
         if save_file is not None:
-            self.save_bbox_img(
-                image_list,
+            self.save_bbox_image(
+                im,
                 path,
                 im0s,
                 pred,
-                output_dir=self.output_dir)
+                save_dir)
 
         return pred
 
@@ -154,19 +161,20 @@ class Detector(object):
         writer.release()
 
     def save_bbox_image(self, im, path, im0s, pred, save_dir):
-
+        print("#####")
+        print(pred)
         for i, det in enumerate(pred):  # per image
-            seen += 1
             im0 = im0s.copy()
 
             p = Path(path)  # to Path
+
             save_path = str(save_dir / p.name)  # im.jpg
             #txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
-            s += '%gx%g ' % im.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             imc = im0.copy()
             annotator = Annotator(im0)
             if len(det):
+
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
 
@@ -183,9 +191,8 @@ class Detector(object):
                     #     f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
                     c = int(cls)  # integer class
-                    label = 'yolov5'
+                    label = f'{self.model.names[c]} {conf:.2f}'
                     annotator.box_label(xyxy, label, color=colors(c, True))
-
                     save_one_box(xyxy, imc, file=save_dir / 'crops' / label / f'{p.stem}.jpg', BGR=True)
 
             # Stream results
@@ -222,10 +229,9 @@ class PredictConfig():
 
     def __init__(self, model_dir):
         # parsing Yaml config for Preprocess
-        deploy_file = os.path.join(model_dir, 'infer_cfg.yml')
+        deploy_file = os.path.join(os.path.dirname(FLAGS.model_dir), 'infer_cfg.yml')
         with open(deploy_file) as f:
             yml_conf = yaml.safe_load(f)
-        self.check_model(yml_conf)
         self.arch = yml_conf['arch']
         self.preprocess_infos = yml_conf['Preprocess']
         self.min_subgraph_size = yml_conf['min_subgraph_size']
@@ -247,17 +253,6 @@ class PredictConfig():
             )
         self.print_config()
 
-    def check_model(self, yml_conf):
-        """
-        Raises:
-            ValueError: loaded model not in supported model type 
-        """
-        for support_model in SUPPORT_MODELS:
-            if support_model in yml_conf['arch']:
-                return True
-        raise ValueError("Unsupported arch: {}, expect {}".format(yml_conf[
-            'arch'], SUPPORT_MODELS))
-
     def print_config(self):
         print('-----------  Model Configuration -----------')
         print('%s: %s' % ('Model Arch', self.arch))
@@ -276,7 +271,7 @@ def print_arguments(args):
 
 
 def main():
-    deploy_file = os.path.join(FLAGS.model_dir, 'infer_cfg.yml')
+    deploy_file = os.path.join(os.path.dirname(FLAGS.model_dir), 'infer_cfg.yml')
     with open(deploy_file) as f:
         yml_conf = yaml.safe_load(f)
 
@@ -302,7 +297,7 @@ def main():
         dataset = LoadImages(FLAGS.image_file)
         for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
             detector.predict_image(
-                im, path, im0s, repeats=100, save_file=output_dir)
+                im, path, im0s, repeats=100, save_file=FLAGS.output_dir)
             detector.det_times.info(average=True)
 
 
@@ -312,12 +307,12 @@ if __name__ == '__main__':
     FLAGS = parser.parse_args()
     print_arguments(FLAGS)
     FLAGS.device = FLAGS.device.upper()
-    assert FLAGS.device in ['CPU', 'GPU', 'XPU'
-                            ], "device should be CPU, GPU or XPU"
-    assert not FLAGS.use_gpu, "use_gpu has been deprecated, please use --device"
+    #assert FLAGS.device in ['CPU', 'GPU', 'XPU'
+                           # ], "device should be CPU, GPU or XPU"
+    # assert not FLAGS.use_gpu, "use_gpu has been deprecated, please use --device"
 
-    assert not (
-        FLAGS.enable_mkldnn == False and FLAGS.enable_mkldnn_bfloat16 == True
-    ), 'To enable mkldnn bfloat, please turn on both enable_mkldnn and enable_mkldnn_bfloat16'
+    # assert not (
+    #     FLAGS.enable_mkldnn == False and FLAGS.enable_mkldnn_bfloat16 == True
+    # ), 'To enable mkldnn bfloat, please turn on both enable_mkldnn and enable_mkldnn_bfloat16'
 
     main()

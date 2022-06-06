@@ -788,7 +788,6 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         if (time.time() - t) > time_limit:
             LOGGER.warning(f'WARNING: NMS time limit {time_limit}s exceeded')
             break  # time limit exceeded
-
     return output
 
 

@@ -294,6 +294,7 @@ class DetectMultiBackend(nn.Module):
 
         super().__init__()
         w = str(weights[0] if isinstance(weights, list) else weights)
+        print(self.model_type(w))
         pt, jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs = self.model_type(w)  # get backend
         stride, names = 64, [f'class{i}' for i in range(1000)]  # assign defaults
         w = attempt_download(w)  # download if not local
@@ -301,7 +302,7 @@ class DetectMultiBackend(nn.Module):
         if data:  # data.yaml path (optional)
             with open(data, errors='ignore') as f:
                 names = yaml.safe_load(f)['names']  # class names
-
+    
         if pt:  # PyTorch
             model = attempt_load(weights if isinstance(weights, list) else w, map_location=device)
             stride = max(int(model.stride.max()), 32)  # model stride
@@ -473,7 +474,7 @@ class DetectMultiBackend(nn.Module):
     @staticmethod
     def model_type(p='path/to/model.pt'):
         # Return model type from model path, i.e. path='path/to/model.onnx' -> type=onnx
-        from export import export_formats
+        from models.export import export_formats
         suffixes = list(export_formats().Suffix) + ['.xml']  # export suffixes
         check_suffix(p, suffixes)  # checks
         p = Path(p).name  # eliminate trailing separators
