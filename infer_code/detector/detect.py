@@ -229,7 +229,7 @@ class PredictConfig():
 
     def __init__(self, model_dir):
         # parsing Yaml config for Preprocess
-        deploy_file = os.path.join(os.path.dirname(FLAGS.model_dir), 'infer_cfg.yml')
+        deploy_file = os.path.join(os.path.dirname(model_dir), 'infer_cfg.yml')
         with open(deploy_file) as f:
             yml_conf = yaml.safe_load(f)
         self.arch = yml_conf['arch']
@@ -271,9 +271,9 @@ def print_arguments(args):
 
 
 def main():
-    deploy_file = os.path.join(os.path.dirname(FLAGS.model_dir), 'infer_cfg.yml')
-    with open(deploy_file) as f:
-        yml_conf = yaml.safe_load(f)
+    # deploy_file = os.path.join(os.path.dirname(FLAGS.model_dir), 'infer_cfg.yml')
+    # with open(deploy_file) as f:
+    #     yml_conf = yaml.safe_load(f)
 
     detector = Detector(
         FLAGS.model_dir,

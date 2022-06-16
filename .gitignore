@@ -1,6 +1,6 @@
 
 logs
-
+output/
 # compilation and distribution
 __pycache__
 _ext
@@ -18,6 +18,9 @@ wheels/
 *.pkl
 *.npy
 *.ts
+*.pt
+*.mp4
+*.jpg
 model_ts*.txt
 
 # ipython/jupyter notebooks

@@ -16,37 +16,43 @@ import os
 import yaml
 import glob
 from collections import defaultdict
+from pathlib import Path
 
 import cv2
 import numpy as np
 import math
-import paddle
 import sys
 import copy
 from collections import Sequence
-from reid import ReID
-from datacollector import DataCollector, Result
-from mtmct import mtmct_process
+
 
 # add deploy path of PadleDetection to sys.path
 parent_path = os.path.abspath(os.path.join(__file__, *(['..'] * 2)))
 sys.path.insert(0, parent_path)
 
-from detector.detector import Detector
+from detector.detect import Detector
+from deep_sort.utils.parser import get_config
+from deep_sort.deep_sort import DeepSort
 # from python.attr_infer import AttrDetector
 # from python.keypoint_infer import KeyPointDetector
 # from python.keypoint_postprocess import translate_to_ori_images
 # from python.action_infer import ActionRecognizer
 # from python.action_utils import KeyPointBuff, ActionVisualHelper
-
+#from reid import ReID
+#from mtmct import mtmct_process
+from utils.datacollector import DataCollector, Result
+from utils.datasets import LoadImages, VID_FORMATS
+from utils.pipe_utils import get_test_images#, crop_image_with_det, crop_image_with_mot, parse_mot_res, parse_mot_keypoint
 from utils.utils import argsparser, print_arguments, merge_cfg, PipeTimer
-from pipe_utils import get_test_images, crop_image_with_det, crop_image_with_mot, parse_mot_res, parse_mot_keypoint
-from python.preprocess import decode_image
-from python.visualize import visualize_box_mask, visualize_attr, visualize_pose, visualize_action
+from utils.plots import Annotator, colors, save_one_box
+from utils.torch_utils import select_device, time_sync
+from utils.general import scale_coords, xyxy2xywh, increment_path
+# from python.preprocess import decode_image
+# from python.visualize import visualize_box_mask, visualize_attr, visualize_pose, visualize_action
 
-from pptracking.python.mot_sde_infer import SDE_Detector
-from pptracking.python.mot.visualize import plot_tracking_dict
-from pptracking.python.mot.utils import flow_statistic
+# from pptracking.python.mot_sde_infer import SDE_Detector
+# from pptracking.python.mot.visualize import plot_tracking_dict
+# from pptracking.python.mot.utils import flow_statistic
 
 
 class Pipeline(object):
@@ -106,8 +112,9 @@ class Pipeline(object):
         self.is_video = False
         self.output_dir = output_dir
         self.vis_result = cfg['visual']
+
         self.input = self._parse_input(image_file, image_dir, video_file,
-                                       video_dir, camera_id)
+                                        video_dir, camera_id)
         if self.multi_camera:
             self.predictor = []
             for name in self.input:
@@ -160,7 +167,7 @@ class Pipeline(object):
         # parse input as is_video and multi_camera
 
         if image_file is not None or image_dir is not None:
-            input = get_test_images(image_dir, image_file)
+            input = get_test_images(image_dir, image_file)[0]
             self.is_video = False
             self.multi_camera = False
 
@@ -326,25 +333,46 @@ class PipePredictor(object):
                     enable_mkldnn)
 
         else:
+            det_cfg = self.cfg['DET']
+            model_dir_det = det_cfg['model_dir']
+            batch_size = det_cfg['batch_size']
             mot_cfg = self.cfg['MOT']
-            model_dir = mot_cfg['model_dir']
+            model_dir_deepsort = mot_cfg['model_dir']
             tracker_config = mot_cfg['tracker_config']
-            batch_size = mot_cfg['batch_size']
-            self.mot_predictor = SDE_Detector(
-                model_dir,
-                tracker_config,
-                device,
-                run_mode,
-                batch_size,
-                trt_min_shape,
-                trt_max_shape,
-                trt_opt_shape,
-                trt_calib_mode,
-                cpu_threads,
-                enable_mkldnn,
-                draw_center_traj=draw_center_traj,
-                secs_interval=secs_interval,
-                do_entrance_counting=do_entrance_counting)
+            with open(tracker_config) as f:
+                tracker_config = yaml.safe_load(f)
+            self.det_predictor = Detector(
+                model_dir_det, device, run_mode, batch_size, trt_min_shape,
+                trt_max_shape, trt_opt_shape, trt_calib_mode, cpu_threads,
+                enable_mkldnn)
+            self.deepsort_list = []
+            nr_sources = 1
+            for i in range(nr_sources):
+                self.deepsort_list.append(
+                    DeepSort(
+                        model_dir_deepsort,
+                        select_device(device),
+                        max_dist=tracker_config['DEEPSORT']['MAX_DIST'],
+                        max_iou_distance=tracker_config['DEEPSORT']['MAX_IOU_DISTANCE'],
+                        max_age=tracker_config['DEEPSORT']['MAX_AGE'], n_init=tracker_config['DEEPSORT']['N_INIT'], nn_budget=tracker_config['DEEPSORT']['NN_BUDGET'],
+                    )
+                )
+            self.outputs = [None] * nr_sources
+            # self.mot_predictor = SDE_Detector(
+            #     model_dir,
+            #     tracker_config,
+            #     device,
+            #     run_mode,
+            #     batch_size,
+            #     trt_min_shape,
+            #     trt_max_shape,
+            #     trt_opt_shape,
+            #     trt_calib_mode,
+            #     cpu_threads,
+            #     enable_mkldnn,
+            #     draw_center_traj=draw_center_traj,
+            #     secs_interval=secs_interval,
+            #     do_entrance_counting=do_entrance_counting)
             if self.with_attr:
                 attr_cfg = self.cfg['ATTR']
                 model_dir = attr_cfg['model_dir']
@@ -422,24 +450,20 @@ class PipePredictor(object):
     def predict_image(self, input):
         # det
         # det -> attr
-        batch_loop_cnt = math.ceil(
-            float(len(input)) / self.det_predictor.batch_size)
-        for i in range(batch_loop_cnt):
-            start_index = i * self.det_predictor.batch_size
-            end_index = min((i + 1) * self.det_predictor.batch_size, len(input))
-            batch_file = input[start_index:end_index]
-            batch_input = [decode_image(f, {})[0] for f in batch_file]
 
-            if i > self.warmup_frame:
+        dataset = LoadImages(input)
+        for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
+            if frame_idx > self.warmup_frame:
                 self.pipe_timer.total_time.start()
                 self.pipe_timer.module_time['det'].start()
             # det output format: class, score, xmin, ymin, xmax, ymax
             det_res = self.det_predictor.predict_image(
-                batch_input, visual=False)
+                im, path, im0s, repeats=100, save_file=self.output_dir)
+            self.det_predictor.det_times.info(average=True)
 
-            if i > self.warmup_frame:
+            if frame_idx > self.warmup_frame:
                 self.pipe_timer.module_time['det'].end()
-            self.pipeline_res.update(det_res, 'det')
+            #self.pipeline_res.update(det_res, 'det')
 
             if self.with_attr:
                 crop_inputs = crop_image_with_det(batch_input, det_res)
@@ -459,95 +483,183 @@ class PipePredictor(object):
                 attr_res = {'output': attr_res_list}
                 self.pipeline_res.update(attr_res, 'attr')
 
-            self.pipe_timer.img_num += len(batch_input)
-            if i > self.warmup_frame:
+            self.pipe_timer.img_num += 1
+            if frame_idx > self.warmup_frame:
                 self.pipe_timer.total_time.end()
 
-            if self.cfg['visual']:
-                self.visualize_image(batch_file, batch_input, self.pipeline_res)
+            # if self.cfg['visual']:
+            #     self.visualize_image(batch_file, batch_input, self.pipeline_res)
 
     def predict_video(self, video_file):
         # mot
         # mot -> attr
         # mot -> pose -> action
-        capture = cv2.VideoCapture(video_file)
-        video_out_name = 'output.mp4' if self.file_name is None else self.file_name
+        
+        dataset = LoadImages(video_file)
 
-        # Get Video info : resolution, fps, frame count
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = int(capture.get(cv2.CAP_PROP_FPS))
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        print("video fps: %d, frame_count: %d" % (fps, frame_count))
-
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-        out_path = os.path.join(self.output_dir, video_out_name)
-        fourcc = cv2.VideoWriter_fourcc(* 'mp4v')
-        writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-        frame_id = 0
-
-        entrance, records, center_traj = None, None, None
-        if self.draw_center_traj:
-            center_traj = [{}]
-        id_set = set()
-        interval_id_set = set()
-        in_id_list = list()
-        out_id_list = list()
-        prev_center = dict()
-        records = list()
-        entrance = [0, height / 2., width, height / 2.]
-        video_fps = fps
-
-        while (1):
-            if frame_id % 10 == 0:
-                print('frame id: ', frame_id)
-            ret, frame = capture.read()
-            if not ret:
-                break
-
+        save_dir = increment_path(Path(self.output_dir) / 'mot', exist_ok=0)
+        num = len(self.outputs)
+        vid_path, vid_writer = [None] * num, [None] * num
+        (save_dir / 'tracks').mkdir(parents=True, exist_ok=True)
+        for frame_id, (path, im, im0s, vid_cap, s) in enumerate(dataset):
             if frame_id > self.warmup_frame:
                 self.pipe_timer.total_time.start()
-                self.pipe_timer.module_time['mot'].start()
-            res = self.mot_predictor.predict_image(
-                [copy.deepcopy(frame)], visual=False)
-
+                self.pipe_timer.module_time['det'].start()
+            
+            # det output format: class, score, xmin, ymin, xmax, ymax
+            pred = self.det_predictor.predict_image(im, path, im0s, repeats=100, save_file=None)
+            self.det_predictor.det_times.info(average=True)
             if frame_id > self.warmup_frame:
-                self.pipe_timer.module_time['mot'].end()
+                self.pipe_timer.module_time['det'].end()
 
-            # mot output format: id, class, score, xmin, ymin, xmax, ymax
-            mot_res = parse_mot_res(res)
+            #self.pipeline_res.update(pred, 'det')
+            
+            im = im[np.newaxis, :]
+            # Process detections
 
-            # flow_statistic only support single class MOT
-            boxes, scores, ids = res[0]  # batch size = 1 in MOT
-            mot_result = (frame_id + 1, boxes[0], scores[0],
-                          ids[0])  # single class
-            statistic = flow_statistic(
-                mot_result, self.secs_interval, self.do_entrance_counting,
-                video_fps, entrance, id_set, interval_id_set, in_id_list,
-                out_id_list, prev_center, records)
-            records = statistic['records']
+            for i, det in enumerate(pred):  # detections per image
+                p, im0, _ = path, im0s.copy(), getattr(dataset, 'frame', 0)
+                p = Path(p)  # to Path
+                # video file
+                if video_file.endswith(VID_FORMATS):
+                    txt_file_name = p.stem
+                    save_path = str(save_dir / p.name)  # im.jpg, vid.mp4, ...
+                # folder with imgs
+                else:
+                    txt_file_name = p.parent.name  # get folder name containing current img
+                    save_path = str(save_dir / p.parent.name)  # im.jpg, vid.mp4, ...
 
-            # nothing detected
-            if len(mot_res['boxes']) == 0:
-                frame_id += 1
-                if frame_id > self.warmup_frame:
-                    self.pipe_timer.img_num += 1
-                    self.pipe_timer.total_time.end()
-                if self.cfg['visual']:
-                    _, _, fps = self.pipe_timer.get_total_time()
-                    im = self.visualize_video(frame, mot_res, frame_id, fps,
-                                              entrance, records,
-                                              center_traj)  # visualize
-                    writer.write(im)
-                    if self.file_name is None:  # use camera_id
-                        cv2.imshow('PPHuman', im)
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
+                txt_path = str(save_dir / 'tracks' / txt_file_name)  # im.txt
 
-                continue
+                s += '%gx%g ' % im.shape[2:]  # print string
+                imc = im0.copy() if 1 else im0  # for save_crop
 
-            self.pipeline_res.update(mot_res, 'mot')
+                annotator = Annotator(im0, line_width=2, pil=not ascii)
+
+                if det is not None and len(det):
+                    # Rescale boxes from img_size to im0 size
+                    det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
+
+                    # Print results
+                    for c in det[:, -1].unique():
+                        n = (det[:, -1] == c).sum()  # detections per class
+                        s += f"{n} human{'s' * (n > 1)}, "  # add to string
+
+                    xywhs = xyxy2xywh(det[:, 0:4])
+                    confs = det[:, 4]
+                    clss = det[:, 5]
+
+                    # pass detections to deepsort
+                    self.outputs[i] = self.deepsort_list[i].update(xywhs.cpu(), confs.cpu(), clss.cpu(), im0)
+                    # draw boxes for visualization
+                    if len(self.outputs[i]) > 0:
+                        for j, (output) in enumerate(self.outputs[i]):
+
+                            bboxes = output[0:4]
+                            id = output[4]
+                            cls = output[5]
+                            conf = output[6]
+
+                            if 1:
+                                # to MOT format
+                                bbox_left = output[0]
+                                bbox_top = output[1]
+                                bbox_w = output[2] - output[0]
+                                bbox_h = output[3] - output[1]
+                                # Write MOT compliant results to file
+                                with open(txt_path + '.txt', 'a') as f:
+                                    f.write(('%g ' * 10 + '\n') % (frame_id + 1, id, bbox_left,  # MOT format
+                                                                bbox_top, bbox_w, bbox_h, -1, -1, -1, i))
+
+                            if 1:  # Add bbox to image
+                                c = int(cls)  # integer class
+                                label = f'{id:0.0f} human {conf:.2f}'
+                                annotator.box_label(bboxes, label, color=colors(c, True))
+                                if 0:
+                                    txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
+                                    save_one_box(bboxes, imc, file=save_dir / 'crops' / txt_file_name / 'human' / f'{id}' / f'{p.stem}.jpg', BGR=True)
+
+                  ##  LOGGER.info(f'{s}Done. YOLO:({t3 - t2:.3f}s), DeepSort:({t5 - t4:.3f}s)')
+                    print(f'{s}Done')
+
+                else:
+                    self.deepsort_list[i].increment_ages()
+                  ##  LOGGER.info('No detections')
+
+                # Stream results
+                im0 = annotator.result()
+                if 0:
+                    cv2.imshow(str(p), im0)
+                    cv2.waitKey(1)  # 1 millisecond
+
+                # Save results (image with detections)
+
+                if 1:
+                    if vid_path[i] != save_path:  # new video
+                        vid_path[i] = save_path
+                        if isinstance(vid_writer[i], cv2.VideoWriter):
+                            vid_writer[i].release()  # release previous video writer
+                        if vid_cap:  # video
+                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        else:  # stream
+                            fps, w, h = 30, im0.shape[1], im0.shape[0]
+                        save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
+                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer[i].write(im0)
+
+
+        # while (1):
+        #     if frame_id % 10 == 0:
+        #         print('frame id: ', frame_id)
+        #     ret, frame = capture.read()
+        #     if not ret:
+        #         break
+
+        #     if frame_id > self.warmup_frame:
+        #         self.pipe_timer.total_time.start()
+        #         self.pipe_timer.module_time['mot'].start()
+        #     res = self.mot_predictor.predict_image(
+        #         [copy.deepcopy(frame)], visual=False)
+
+        #     if frame_id > self.warmup_frame:
+        #         self.pipe_timer.module_time['mot'].end()
+
+        #     # mot output format: id, class, score, xmin, ymin, xmax, ymax
+        #     mot_res = parse_mot_res(res)
+
+        #     # flow_statistic only support single class MOT
+        #     boxes, scores, ids = res[0]  # batch size = 1 in MOT
+        #     mot_result = (frame_id + 1, boxes[0], scores[0],
+        #                   ids[0])  # single class
+        #     statistic = flow_statistic(
+        #         mot_result, self.secs_interval, self.do_entrance_counting,
+        #         video_fps, entrance, id_set, interval_id_set, in_id_list,
+        #         out_id_list, prev_center, records)
+        #     records = statistic['records']
+
+        #     # nothing detected
+        #     if len(mot_res['boxes']) == 0:
+        #         frame_id += 1
+        #         if frame_id > self.warmup_frame:
+        #             self.pipe_timer.img_num += 1
+        #             self.pipe_timer.total_time.end()
+        #         if self.cfg['visual']:
+        #             _, _, fps = self.pipe_timer.get_total_time()
+        #             im = self.visualize_video(frame, mot_res, frame_id, fps,
+        #                                       entrance, records,
+        #                                       center_traj)  # visualize
+        #             writer.write(im)
+        #             if self.file_name is None:  # use camera_id
+        #                 cv2.imshow('PPHuman', im)
+        #                 if cv2.waitKey(1) & 0xFF == ord('q'):
+        #                     break
+
+        #         continue
+
+        #     self.pipeline_res.update(mot_res, 'mot')
+
             if self.with_attr or self.with_action:
                 crop_input, new_bboxes, ori_bboxes = crop_image_with_mot(
                     frame, mot_res)
@@ -618,26 +730,26 @@ class PipePredictor(object):
             else:
                 self.pipeline_res.clear('reid')
 
-            self.collector.append(frame_id, self.pipeline_res)
+            #self.collector.append(frame_id, self.pipeline_res)
 
             if frame_id > self.warmup_frame:
                 self.pipe_timer.img_num += 1
                 self.pipe_timer.total_time.end()
-            frame_id += 1
+           # frame_id += 1
 
-            if self.cfg['visual']:
-                _, _, fps = self.pipe_timer.get_total_time()
-                im = self.visualize_video(frame, self.pipeline_res, frame_id,
-                                          fps, entrance, records,
-                                          center_traj)  # visualize
-                writer.write(im)
-                if self.file_name is None:  # use camera_id
-                    cv2.imshow('PPHuman', im)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break
+            # if self.cfg['visual']:
+            #     _, _, fps = self.pipe_timer.get_total_time()
+            #     im = self.visualize_video(frame, self.pipeline_res, frame_id,
+            #                               fps, entrance, records,
+            #                               center_traj)  # visualize
+            #     writer.write(im)
+            #     if self.file_name is None:  # use camera_id
+            #         cv2.imshow('PPHuman', im)
+            #         if cv2.waitKey(1) & 0xFF == ord('q'):
+            #             break
 
-        writer.release()
-        print('save result to {}'.format(out_path))
+        # writer.release()
+        # print('save result to {}'.format(out_path))
 
     def visualize_video(self,
                         image,
@@ -750,8 +862,8 @@ def main():
 if __name__ == '__main__':
     parser = argsparser()
     FLAGS = parser.parse_args()
-    FLAGS.device = FLAGS.device.upper()
-    assert FLAGS.device in ['CPU', 'GPU', 'XPU'
-                            ], "device should be CPU, GPU or XPU"
+    # FLAGS.device = FLAGS.device.upper()
+    # assert FLAGS.device in ['CPU', 'GPU', 'XPU'
+    #                         ], "device should be CPU, GPU or XPU"
 
     main()

@@ -63,9 +63,9 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
-from models.common import Conv
-from models.experimental import attempt_load
-from models.yolo import Detect
+from .common import Conv
+from .experimental import attempt_load
+from .yolo import Detect
 from utils.activations import SiLU
 from utils.datasets import LoadImages
 from utils.general import (LOGGER, check_dataset, check_img_size, check_requirements, check_version, colorstr,
