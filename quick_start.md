@@ -1,10 +1,10 @@
 ## run
 -- image
-python pipeline.py --config config/infer_cfg.yml --image_file=test_image1.jpg --device=1 
+python pipeline.py --config config/infer_cfg.yml --source=test_image.jpg --device=1 
 
 
 -- video
-python pipeline.py --config config/infer_cfg.yml --video_file=test1.mp4 --device=1 
+python pipeline.py --config config/infer_cfg.yml --source=test_video.mp4 --device=1 
 ## unit_test  detector
 python detector/detect.py --image_file=test_image.jpg --device=0 --model_dir=detector/model_dir/crowdhuman_yolov5m.pt
 

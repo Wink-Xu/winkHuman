@@ -91,7 +91,7 @@ class Detector(object):
                       image_list,
                       path,
                       im0s,
-                      repeats=1,
+                      is_imgDir=0,
                       visual=True,
                       save_file=None):
 
@@ -108,7 +108,7 @@ class Detector(object):
         pred = non_max_suppression(pred)
 
 
-        save_dir = increment_path(Path(self.output_dir) / 'exp', exist_ok=0) 
+        save_dir = increment_path(Path(self.output_dir) / 'exp', exist_ok=is_imgDir) 
         if save_file is not None:
             self.save_bbox_image(
                 im,
@@ -162,6 +162,7 @@ class Detector(object):
 
     def save_bbox_image(self, im, path, im0s, pred, save_dir):
         print("#####")
+        print(path)
         print(pred)
         for i, det in enumerate(pred):  # per image
             im0 = im0s.copy()
@@ -298,7 +299,7 @@ def main():
         for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
             detector.predict_image(
                 im, path, im0s, repeats=100, save_file=FLAGS.output_dir)
-            detector.det_times.info(average=True)
+            # detector.det_times.info(average=True)
 
 
 if __name__ == '__main__':

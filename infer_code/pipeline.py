@@ -17,6 +17,8 @@ import yaml
 import glob
 from collections import defaultdict
 from pathlib import Path
+import ast
+import argparse
 
 import cv2
 import numpy as np
@@ -42,8 +44,7 @@ from deep_sort.deep_sort import DeepSort
 #from mtmct import mtmct_process
 from utils.datacollector import DataCollector, Result
 from utils.datasets import LoadImages, VID_FORMATS
-from utils.pipe_utils import get_test_images#, crop_image_with_det, crop_image_with_mot, parse_mot_res, parse_mot_keypoint
-from utils.utils import argsparser, print_arguments, merge_cfg, PipeTimer
+from utils.pipe_utils import get_test_images, PipeTimer, print_arguments, merge_cfg#, crop_image_with_det, crop_image_with_mot, parse_mot_res, parse_mot_keypoint
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, time_sync
 from utils.general import scale_coords, xyxy2xywh, increment_path
@@ -71,7 +72,7 @@ class Pipeline(object):
         device (string): the device to predict, options are: CPU/GPU/XPU, 
             default as CPU
         run_mode (string): the mode of prediction, options are: 
-            paddle/trt_fp32/trt_fp16, default as paddle
+            pytorch/trt_fp32/trt_fp16, default as pytorch
         trt_min_shape (int): min shape for dynamic shape in trt, default as 1
         trt_max_shape (int): max shape for dynamic shape in trt, default as 1280
         trt_opt_shape (int): opt shape for dynamic shape in trt, default as 640
@@ -89,15 +90,12 @@ class Pipeline(object):
 
     def __init__(self,
                  cfg,
-                 image_file=None,
-                 image_dir=None,
-                 video_file=None,
-                 video_dir=None,
+                 source = None,
                  camera_id=-1,
                  enable_attr=False,
                  enable_action=True,
                  device='CPU',
-                 run_mode='paddle',
+                 run_mode='pytorch',
                  trt_min_shape=1,
                  trt_max_shape=1280,
                  trt_opt_shape=640,
@@ -109,12 +107,16 @@ class Pipeline(object):
                  secs_interval=10,
                  do_entrance_counting=False):
         self.multi_camera = False
-        self.is_video = False
+        
         self.output_dir = output_dir
         self.vis_result = cfg['visual']
 
-        self.input = self._parse_input(image_file, image_dir, video_file,
-                                        video_dir, camera_id)
+        self.input = source
+        if source.endswith(VID_FORMATS):
+            self.is_video = True
+        else:
+            self.is_video = False
+
         if self.multi_camera:
             self.predictor = []
             for name in self.input:
@@ -153,51 +155,11 @@ class Pipeline(object):
                 draw_center_traj=draw_center_traj,
                 secs_interval=secs_interval,
                 do_entrance_counting=do_entrance_counting)
-            if self.is_video:
-                self.predictor.set_file_name(video_file)
 
         self.output_dir = output_dir
         self.draw_center_traj = draw_center_traj
         self.secs_interval = secs_interval
         self.do_entrance_counting = do_entrance_counting
-
-    def _parse_input(self, image_file, image_dir, video_file, video_dir,
-                     camera_id):
-
-        # parse input as is_video and multi_camera
-
-        if image_file is not None or image_dir is not None:
-            input = get_test_images(image_dir, image_file)[0]
-            self.is_video = False
-            self.multi_camera = False
-
-        elif video_file is not None:
-            assert os.path.exists(video_file), "video_file not exists."
-            self.multi_camera = False
-            input = video_file
-            self.is_video = True
-
-        elif video_dir is not None:
-            videof = [os.path.join(video_dir, x) for x in os.listdir(video_dir)]
-            if len(videof) > 1:
-                self.multi_camera = True
-                videof.sort()
-                input = videof
-            else:
-                input = videof[0]
-            self.is_video = True
-
-        elif camera_id != -1:
-            self.multi_camera = False
-            input = camera_id
-            self.is_video = True
-
-        else:
-            raise ValueError(
-                "Illegal Input, please set one of ['video_file'，'camera_id'，'image_file', 'image_dir']"
-            )
-
-        return input
 
     def run(self):
         if self.multi_camera:
@@ -242,7 +204,7 @@ class PipePredictor(object):
         device (string): the device to predict, options are: CPU/GPU/XPU, 
             default as CPU
         run_mode (string): the mode of prediction, options are: 
-            paddle/trt_fp32/trt_fp16, default as paddle
+            pytorch/trt_fp32/trt_fp16, default as pytorch
         trt_min_shape (int): min shape for dynamic shape in trt, default as 1
         trt_max_shape (int): max shape for dynamic shape in trt, default as 1280
         trt_opt_shape (int): opt shape for dynamic shape in trt, default as 640
@@ -265,7 +227,7 @@ class PipePredictor(object):
                  enable_attr=False,
                  enable_action=False,
                  device='CPU',
-                 run_mode='paddle',
+                 run_mode='pytorch',
                  trt_min_shape=1,
                  trt_max_shape=1280,
                  trt_opt_shape=640,
@@ -305,15 +267,15 @@ class PipePredictor(object):
         self.multi_camera = multi_camera
         self.cfg = cfg
         self.output_dir = output_dir
-        self.draw_center_traj = draw_center_traj
-        self.secs_interval = secs_interval
+
+        self.draw_center_traj = draw_center_traj           ## 做客流计数的flag
+        self.secs_interval = secs_interval 
         self.do_entrance_counting = do_entrance_counting
 
         self.warmup_frame = self.cfg['warmup_frame']
-        self.pipeline_res = Result()
-        self.pipe_timer = PipeTimer()
-        self.file_name = None
-        self.collector = DataCollector()
+        self.pipeline_res = Result()    ## 记录各个模块的运行结果，用字典存储。
+        self.pipe_timer = PipeTimer()   ## 记录各个模块的运行时间。
+        self.collector = DataCollector()  ## 记录每一条轨迹的相关信息。
 
         if not is_video:
             det_cfg = self.cfg['DET']
@@ -430,13 +392,6 @@ class PipePredictor(object):
                                        trt_opt_shape, trt_calib_mode,
                                        cpu_threads, enable_mkldnn)
 
-    def set_file_name(self, path):
-        if path is not None:
-            self.file_name = os.path.split(path)[-1]
-        else:
-            # use camera id
-            self.file_name = None
-
     def get_result(self):
         return self.collector.get_res()
 
@@ -445,7 +400,7 @@ class PipePredictor(object):
             self.predict_video(input)
         else:
             self.predict_image(input)
-        self.pipe_timer.info()
+        #self.pipe_timer.info()
 
     def predict_image(self, input):
         # det
@@ -458,8 +413,8 @@ class PipePredictor(object):
                 self.pipe_timer.module_time['det'].start()
             # det output format: class, score, xmin, ymin, xmax, ymax
             det_res = self.det_predictor.predict_image(
-                im, path, im0s, repeats=100, save_file=self.output_dir)
-            self.det_predictor.det_times.info(average=True)
+                im, path, im0s, is_imgDir=1, save_file=self.output_dir)
+            #self.det_predictor.det_times.info(average=True)
 
             if frame_idx > self.warmup_frame:
                 self.pipe_timer.module_time['det'].end()
@@ -506,9 +461,9 @@ class PipePredictor(object):
                 self.pipe_timer.total_time.start()
                 self.pipe_timer.module_time['det'].start()
             
-            # det output format: class, score, xmin, ymin, xmax, ymax
-            pred = self.det_predictor.predict_image(im, path, im0s, repeats=100, save_file=None)
-            self.det_predictor.det_times.info(average=True)
+            pred = self.det_predictor.predict_image(im, path, im0s, is_imgDir=0, save_file=None)
+
+            #self.det_predictor.det_times.info(average=True)
             if frame_id > self.warmup_frame:
                 self.pipe_timer.module_time['det'].end()
 
@@ -543,7 +498,7 @@ class PipePredictor(object):
                     # Print results
                     for c in det[:, -1].unique():
                         n = (det[:, -1] == c).sum()  # detections per class
-                        s += f"{n} human{'s' * (n > 1)}, "  # add to string
+                      #  s += f"{n} human{'s' * (n > 1)}, "  # add to string
 
                     xywhs = xyxy2xywh(det[:, 0:4])
                     confs = det[:, 4]
@@ -578,7 +533,8 @@ class PipePredictor(object):
                                 if 0:
                                     txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
                                     save_one_box(bboxes, imc, file=save_dir / 'crops' / txt_file_name / 'human' / f'{id}' / f'{p.stem}.jpg', BGR=True)
-
+                            import pdb
+                            pdb.set_trace()
                   ##  LOGGER.info(f'{s}Done. YOLO:({t3 - t2:.3f}s), DeepSort:({t5 - t4:.3f}s)')
                     print(f'{s}Done')
 
@@ -608,7 +564,6 @@ class PipePredictor(object):
                         save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
-
 
         # while (1):
         #     if frame_id % 10 == 0:
@@ -849,8 +804,7 @@ def main():
     cfg = merge_cfg(FLAGS)
     print_arguments(cfg)
     pipeline = Pipeline(
-        cfg, FLAGS.image_file, FLAGS.image_dir, FLAGS.video_file,
-        FLAGS.video_dir, FLAGS.camera_id, FLAGS.enable_attr,
+        cfg, FLAGS.source, FLAGS.camera_id, FLAGS.enable_attr,
         FLAGS.enable_action, FLAGS.device, FLAGS.run_mode, FLAGS.trt_min_shape,
         FLAGS.trt_max_shape, FLAGS.trt_opt_shape, FLAGS.trt_calib_mode,
         FLAGS.cpu_threads, FLAGS.enable_mkldnn, FLAGS.output_dir,
@@ -858,10 +812,94 @@ def main():
 
     pipeline.run()
 
+def argsparser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help=("Path of configure"),
+        required=True)
+    parser.add_argument(
+        "--source", type=str, default=None, help="Path of source.")
+    parser.add_argument(
+        "--model_dir", nargs='*', help="set model dir in pipeline")
+    parser.add_argument(
+        "--camera_id",
+        type=int,
+        default=-1,
+        help="device id of camera to predict.")
+    parser.add_argument(
+        "--enable_attr",
+        type=ast.literal_eval,
+        default=False,
+        help="Whether use attribute recognition.")
+    parser.add_argument(
+        "--enable_action",
+        type=ast.literal_eval,
+        default=False,
+        help="Whether use action recognition.")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="output",
+        help="Directory of output visualization files.")
+    parser.add_argument(
+        "--run_mode",
+        type=str,
+        default='pytorch',
+        help="mode of running(pytorch/trt_fp32/trt_fp16/trt_int8)")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default='0',
+        help="Choose the device you want to run, it can be: CPU/GPU/XPU, default is CPU."
+    )
+    parser.add_argument(
+        "--enable_mkldnn",
+        type=ast.literal_eval,
+        default=False,
+        help="Whether use mkldnn with CPU.")
+    parser.add_argument(
+        "--cpu_threads", type=int, default=1, help="Num of threads with CPU.")
+    parser.add_argument(
+        "--trt_min_shape", type=int, default=1, help="min_shape for TensorRT.")
+    parser.add_argument(
+        "--trt_max_shape",
+        type=int,
+        default=1280,
+        help="max_shape for TensorRT.")
+    parser.add_argument(
+        "--trt_opt_shape",
+        type=int,
+        default=640,
+        help="opt_shape for TensorRT.")
+    parser.add_argument(
+        "--trt_calib_mode",
+        type=bool,
+        default=False,
+        help="If the model is produced by TRT offline quantitative "
+        "calibration, trt_calib_mode need to set True.")
+    parser.add_argument(
+        "--do_entrance_counting",
+        action='store_true',
+        help="Whether counting the numbers of identifiers entering "
+        "or getting out from the entrance. Note that only support one-class"
+        "counting, multi-class counting is coming soon.")
+    parser.add_argument(
+        "--secs_interval",
+        type=int,
+        default=2,
+        help="The seconds interval to count after tracking")
+    parser.add_argument(
+        "--draw_center_traj",
+        action='store_true',
+        help="Whether drawing the trajectory of center")
+    return parser
 
 if __name__ == '__main__':
     parser = argsparser()
-    FLAGS = parser.parse_args()
+    FLAGS = parser.parse_args()    # 参数解析 
     # FLAGS.device = FLAGS.device.upper()
     # assert FLAGS.device in ['CPU', 'GPU', 'XPU'
     #                         ], "device should be CPU, GPU or XPU"
