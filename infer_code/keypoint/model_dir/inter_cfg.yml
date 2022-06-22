@@ -1,0 +1,2 @@
+arch: HRNet
+config_path: ../config/w32_256x192_adam_lr1e-3.yaml
