@@ -457,6 +457,8 @@ class PipePredictor(object):
         vid_path, vid_writer = [None] * num, [None] * num
         (save_dir / 'tracks').mkdir(parents=True, exist_ok=True)
         for frame_id, (path, im, im0s, vid_cap, s) in enumerate(dataset):
+            if frame_id > 20:
+                break
             if frame_id > self.warmup_frame:
                 self.pipe_timer.total_time.start()
                 self.pipe_timer.module_time['det'].start()
@@ -504,7 +506,7 @@ class PipePredictor(object):
                     confs = det[:, 4]
                     clss = det[:, 5]
 
-                    # pass detections to deepsort
+                    # pass detections to deepsort   [x_left, y_top, x_right, y_bottom, track_id, class_id, conf]
                     self.outputs[i] = self.deepsort_list[i].update(xywhs.cpu(), confs.cpu(), clss.cpu(), im0)
                     # draw boxes for visualization
                     if len(self.outputs[i]) > 0:
@@ -533,8 +535,7 @@ class PipePredictor(object):
                                 if 0:
                                     txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
                                     save_one_box(bboxes, imc, file=save_dir / 'crops' / txt_file_name / 'human' / f'{id}' / f'{p.stem}.jpg', BGR=True)
-                            import pdb
-                            pdb.set_trace()
+
                   ##  LOGGER.info(f'{s}Done. YOLO:({t3 - t2:.3f}s), DeepSort:({t5 - t4:.3f}s)')
                     print(f'{s}Done')
 
@@ -564,107 +565,60 @@ class PipePredictor(object):
                         save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
+                self.pipeline_res.update({'boxes' : list(map(lambda x:x.tolist(), self.outputs[i]))}, 'mot')
 
-        # while (1):
-        #     if frame_id % 10 == 0:
-        #         print('frame id: ', frame_id)
-        #     ret, frame = capture.read()
-        #     if not ret:
-        #         break
+                if self.with_attr or self.with_action:
+                    crop_input, new_bboxes, ori_bboxes = crop_image_with_mot(
+                        frame, mot_res)
 
-        #     if frame_id > self.warmup_frame:
-        #         self.pipe_timer.total_time.start()
-        #         self.pipe_timer.module_time['mot'].start()
-        #     res = self.mot_predictor.predict_image(
-        #         [copy.deepcopy(frame)], visual=False)
-
-        #     if frame_id > self.warmup_frame:
-        #         self.pipe_timer.module_time['mot'].end()
-
-        #     # mot output format: id, class, score, xmin, ymin, xmax, ymax
-        #     mot_res = parse_mot_res(res)
-
-        #     # flow_statistic only support single class MOT
-        #     boxes, scores, ids = res[0]  # batch size = 1 in MOT
-        #     mot_result = (frame_id + 1, boxes[0], scores[0],
-        #                   ids[0])  # single class
-        #     statistic = flow_statistic(
-        #         mot_result, self.secs_interval, self.do_entrance_counting,
-        #         video_fps, entrance, id_set, interval_id_set, in_id_list,
-        #         out_id_list, prev_center, records)
-        #     records = statistic['records']
-
-        #     # nothing detected
-        #     if len(mot_res['boxes']) == 0:
-        #         frame_id += 1
-        #         if frame_id > self.warmup_frame:
-        #             self.pipe_timer.img_num += 1
-        #             self.pipe_timer.total_time.end()
-        #         if self.cfg['visual']:
-        #             _, _, fps = self.pipe_timer.get_total_time()
-        #             im = self.visualize_video(frame, mot_res, frame_id, fps,
-        #                                       entrance, records,
-        #                                       center_traj)  # visualize
-        #             writer.write(im)
-        #             if self.file_name is None:  # use camera_id
-        #                 cv2.imshow('PPHuman', im)
-        #                 if cv2.waitKey(1) & 0xFF == ord('q'):
-        #                     break
-
-        #         continue
-
-        #     self.pipeline_res.update(mot_res, 'mot')
-
-            if self.with_attr or self.with_action:
-                crop_input, new_bboxes, ori_bboxes = crop_image_with_mot(
-                    frame, mot_res)
-
-            if self.with_attr:
-                if frame_id > self.warmup_frame:
-                    self.pipe_timer.module_time['attr'].start()
-                attr_res = self.attr_predictor.predict_image(
-                    crop_input, visual=False)
-                if frame_id > self.warmup_frame:
-                    self.pipe_timer.module_time['attr'].end()
-                self.pipeline_res.update(attr_res, 'attr')
-
-            if self.with_action:
-                if frame_id > self.warmup_frame:
-                    self.pipe_timer.module_time['kpt'].start()
-                kpt_pred = self.kpt_predictor.predict_image(
-                    crop_input, visual=False)
-                keypoint_vector, score_vector = translate_to_ori_images(
-                    kpt_pred, np.array(new_bboxes))
-                kpt_res = {}
-                kpt_res['keypoint'] = [
-                    keypoint_vector.tolist(), score_vector.tolist()
-                ] if len(keypoint_vector) > 0 else [[], []]
-                kpt_res['bbox'] = ori_bboxes
-                if frame_id > self.warmup_frame:
-                    self.pipe_timer.module_time['kpt'].end()
-
-                self.pipeline_res.update(kpt_res, 'kpt')
-
-                self.kpt_buff.update(kpt_res, mot_res)  # collect kpt output
-                state = self.kpt_buff.get_state(
-                )  # whether frame num is enough or lost tracker
-
-                action_res = {}
-                if state:
+                if self.with_attr:
                     if frame_id > self.warmup_frame:
-                        self.pipe_timer.module_time['action'].start()
-                    collected_keypoint = self.kpt_buff.get_collected_keypoint(
-                    )  # reoragnize kpt output with ID
-                    action_input = parse_mot_keypoint(collected_keypoint,
-                                                      self.coord_size)
-                    action_res = self.action_predictor.predict_skeleton_with_mot(
-                        action_input)
+                        self.pipe_timer.module_time['attr'].start()
+                    attr_res = self.attr_predictor.predict_image(
+                        crop_input, visual=False)
                     if frame_id > self.warmup_frame:
-                        self.pipe_timer.module_time['action'].end()
-                    self.pipeline_res.update(action_res, 'action')
+                        self.pipe_timer.module_time['attr'].end()
+                    self.pipeline_res.update(attr_res, 'attr')
 
-                if self.cfg['visual']:
-                    self.action_visual_helper.update(action_res)
+                if self.with_action:
+                    if frame_id > self.warmup_frame:
+                        self.pipe_timer.module_time['kpt'].start()
+                    kpt_pred = self.kpt_predictor.predict_image(
+                        crop_input, visual=False)
+                    keypoint_vector, score_vector = translate_to_ori_images(
+                        kpt_pred, np.array(new_bboxes))
+                    kpt_res = {}
+                    kpt_res['keypoint'] = [
+                        keypoint_vector.tolist(), score_vector.tolist()
+                    ] if len(keypoint_vector) > 0 else [[], []]
+                    kpt_res['bbox'] = ori_bboxes
+                    if frame_id > self.warmup_frame:
+                        self.pipe_timer.module_time['kpt'].end()
+
+                    self.pipeline_res.update(kpt_res, 'kpt')
+
+                    self.kpt_buff.update(kpt_res, mot_res)  # collect kpt output
+                    state = self.kpt_buff.get_state(
+                    )  # whether frame num is enough or lost tracker
+
+                    action_res = {}
+                    if state:
+                        if frame_id > self.warmup_frame:
+                            self.pipe_timer.module_time['action'].start()
+                        collected_keypoint = self.kpt_buff.get_collected_keypoint(
+                        )  # reoragnize kpt output with ID
+                        action_input = parse_mot_keypoint(collected_keypoint,
+                                                        self.coord_size)
+                        action_res = self.action_predictor.predict_skeleton_with_mot(
+                            action_input)
+                        if frame_id > self.warmup_frame:
+                            self.pipe_timer.module_time['action'].end()
+                        self.pipeline_res.update(action_res, 'action')
+
+                    if self.cfg['visual']:
+                        self.action_visual_helper.update(action_res)
+                    
+                self.collector.append(frame_id, self.pipeline_res)
 
             if self.with_mtmct and frame_id % 10 == 0:
                 crop_input, img_qualities, rects = self.reid_predictor.crop_image_with_mot(
@@ -703,6 +657,7 @@ class PipePredictor(object):
             #         if cv2.waitKey(1) & 0xFF == ord('q'):
             #             break
 
+        self.collector.save_result(save_dir)
         # writer.release()
         # print('save result to {}'.format(out_path))
 

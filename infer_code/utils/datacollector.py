@@ -14,7 +14,7 @@
 
 import os
 import copy
-
+import json
 
 class Result(object):
     def __init__(self):
@@ -38,6 +38,17 @@ class Result(object):
     def clear(self, name):
         self.res_dict[name].clear()
 
+
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return super(NpEncoder, self).default(obj) 
 
 class DataCollector(object):
     """
@@ -80,7 +91,7 @@ class DataCollector(object):
 
         rects = reid_res['rects'] if reid_res is not None else mot_res['boxes']
         for idx, mot_item in enumerate(rects):
-            ids = int(mot_item[0])
+            ids = int(mot_item[4])
             if ids not in self.collector:
                 self.collector[ids] = copy.deepcopy(self.mots)
             self.collector[ids]["frames"].append(frameid)
@@ -103,3 +114,7 @@ class DataCollector(object):
 
     def get_res(self):
         return self.collector
+
+    def save_result(self, output_dir):
+        with open( str(output_dir / 'datacollector.json'), 'w') as fw:
+            json.dump(self.collector, fw)

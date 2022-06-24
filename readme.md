@@ -10,7 +10,7 @@ The overall architecture of code refers to https://github.com/PaddlePaddle/Paddl
 5. 每个网络怎么训练的，用了什么数据，数据怎么标注
 
 # todo list
-1. yolov5训自己的数据集。 和张帆对比。（yolo系列（包括yolox）要学会了，到可以被提问的程度。也看下centernet） √ 完成了训练，但是没对比。
+1. yolov5训自己的数据集。 和zf对比。（yolo系列（包括yolox）要学会了，到可以被提问的程度。也看下centernet） √ 完成了训练，但是没对比。
 2. pipleline 跑视频 完成跟踪。（deepsort） 代码整理。加注释。   √
 3. 集成HRNet           √ 完成了关键点的单元测试代码。
 4. 行为识别ST-GCN，成功跑demo，inference。
