@@ -298,7 +298,7 @@ def main():
         dataset = LoadImages(FLAGS.image_file)
         for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
             detector.predict_image(
-                im, path, im0s, repeats=100, save_file=FLAGS.output_dir)
+                im, path, im0s, 0, save_file=FLAGS.output_dir)
             # detector.det_times.info(average=True)
 
 

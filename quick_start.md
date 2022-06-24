@@ -8,15 +8,6 @@ python pipeline.py --config config/infer_cfg.yml --source=test_video.mp4 --devic
 ## unit_test  detector
 python detector/detect.py --image_file=test_image.jpg --device=0 --model_dir=detector/model_dir/crowdhuman_yolov5m.pt
 
+## unit_test  keypoint
+python keypoint/keypoint.py --image_file=body_image.jpg --device=0 --model_dir=keypoint/model_dir
 
-
-
-# todo list
-1. yolov5训自己的数据集。 和张帆对比。（yolo系列（包括yolox）要学会了，到可以被提问的程度。也看下centernet）
-2. pipleline 跑视频 完成跟踪。（deepsort） 代码整理。加注释。
-3. 集成HRNet
-4. 行为识别ST-GCN，成功跑demo，inference。
-5. 集成attribute
-6. 集成ReID
-7. tensort部署
-8. 服务化

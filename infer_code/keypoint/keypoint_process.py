@@ -289,13 +289,14 @@ def save_debug_images(config, input, joints_pred, output,
         return
 
 
+
     if config.DEBUG.SAVE_BATCH_IMAGES_PRED:
         save_batch_image_with_joints(
             input, joints_pred,
-            '{}_pred.jpg'.format(prefix)
+           str(prefix / 'kp_pred.jpg')
         )
 
     if config.DEBUG.SAVE_HEATMAPS_PRED:
         save_batch_heatmaps(
-            input, output, '{}_hm_pred.jpg'.format(prefix)
+            input, output,  str(prefix / 'kp_hm_pred.jpg')
         )

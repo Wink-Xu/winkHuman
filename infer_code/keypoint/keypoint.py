@@ -16,6 +16,7 @@ import os
 import time
 import yaml
 import glob
+from pathlib import Path
 from functools import reduce
 
 from PIL import Image
@@ -26,18 +27,20 @@ import numpy as np
 
 import sys
 # add deploy path of PadleDetection to sys.path
-parent_path = os.path.abspath(os.path.join(__file__, *(['..'])))
+parent_path = os.path.abspath(os.path.join(__file__, *(['..']*2)))
 sys.path.insert(0, parent_path)
 
-from preprocess import preprocess, NormalizeImage, Permute
-from .keypoint_process import get_affine_transform, get_final_preds, get_max_preds, save_debug_images
-from visualize import visualize_pose
-
+#from visualize import visualize_pose
+import torch
 import torchvision.transforms as transforms
-from .models.pose_hrnet import get_pose_net
-from .config import cfg
-from .config import update_config
-from utils import argsparser, Timer
+
+from keypoint.keypoint_process import get_affine_transform, get_final_preds, get_max_preds, save_debug_images
+from utils.general import increment_path
+from keypoint.models.pose_hrnet import get_pose_net
+from keypoint.config import cfg
+from keypoint.config import update_config
+from keypoint.utils import argsparser, Timer
+
 
 class KeyPointDetector(object):
     """
@@ -72,11 +75,11 @@ class KeyPointDetector(object):
                  use_dark=True):
         self.cfg = self.set_config(model_dir)     
         self.model = get_pose_net(self.cfg, is_train = False)
-        self.model.load_state_dict(torch.load(self.cfg.TEST.MODEL_FILE, strict =False))
+        self.model.load_state_dict(torch.load(self.cfg.TEST.MODEL_FILE), strict =False)
         self.model = torch.nn.DataParallel(self.model, device_ids=self.cfg.GPUS).cuda()
         self.batch_size = batch_size
         self.det_times = Timer()
-        self.use_dark = use_dark
+        self.output_dir = output_dir
 
     def set_config(self, model_dir):
         deploy_file = os.path.join(model_dir, 'infer_cfg.yml')
@@ -84,12 +87,12 @@ class KeyPointDetector(object):
             yml_conf = yaml.safe_load(f)
         arch = yml_conf['arch']
         config_path = yml_conf['config_path']
-        self.cfg = update_config(cfg, config_path)
+        update_config(cfg, config_path)
         print('-----------Keypoint  Model Configuration -----------')
         print('%s: %s' % ('Model Arch', arch))
         print('%s: %s' % ('Config Path', config_path))
         print('--------------------------------------------')        
-        return 
+        return cfg
 
     def _xywh2cs(self, x, y, w, h):
         center = np.zeros((2), dtype=np.float32)
@@ -123,19 +126,23 @@ class KeyPointDetector(object):
         r = 0
         
         image_size = np.array(self.cfg.MODEL.IMAGE_SIZE)
-        trans = get_affine_transform(c, s, r, image_size)
-        inputs = cv2.warpAffine(
-            data_numpy,
-            trans,
-            (int(image_size[0]), int(image_size[1])),
-            flags=cv2.INTER_LINEAR)
+        trans = get_affine_transform(self.c, self.s, r, image_size)
+        
+        num_image = inputs.shape[0]
+        input_out = torch.zeros((num_image, 3, int(image_size[1]), int(image_size[0])))
+        for i in range(num_image):        
+            warpAffine_img = cv2.warpAffine(
+                inputs[i],
+                trans,
+                (int(image_size[0]), int(image_size[1])),
+                flags=cv2.INTER_LINEAR)
 
-        inputs = transform(inputs)
-        return inputs 
+            input_out[i,:,:,:] = transform(warpAffine_img)
+
+        return input_out 
 
     def postprocess(self, inputs, result):
-        np_heatmap = result['heatmap']
-        np_masks = result['masks']
+
         # postprocess output of predictor
         idx = 0
         num_samples = inputs.shape[0]
@@ -148,16 +155,15 @@ class KeyPointDetector(object):
             self.cfg, result.clone().cpu().numpy(), self.c, self.s)
         pred, _ = get_max_preds(result.clone().cpu().numpy())
 
-        all_preds[idx:idx + num_images, :, 0:2] = preds[:, :, 0:2]
-        all_preds[idx:idx + num_images, :, 2:3] = maxvals
+        all_preds[idx:idx + num_samples, :, 0:2] = preds[:, :, 0:2]
+        all_preds[idx:idx + num_samples, :, 2:3] = maxvals
            
 
         return all_preds, pred
 
     def predict_image(self,
                       image_list,
-                      run_benchmark=False,
-                      repeats=1,
+                      is_imgDir = False,
                       visual=True):
         results = []
         batch_loop_cnt = math.ceil(float(len(image_list)) / self.batch_size)
@@ -166,14 +172,15 @@ class KeyPointDetector(object):
             end_index = min((i + 1) * self.batch_size, len(image_list))
             batch_image_list = image_list[start_index:end_index]
 
-                # preprocess
+            # preprocess
             self.det_times.preprocess_time_s.start()
             inputs = self.preprocess(batch_image_list)
             self.det_times.preprocess_time_s.end()
 
             # model prediction
             self.det_times.inference_time_s.start()
-            outputs = self.model(inputs)
+            with torch.no_grad():
+                outputs = self.model(inputs.cuda())
             self.det_times.inference_time_s.end()
             if isinstance(outputs, list):
                 output = outputs[-1]
@@ -184,12 +191,13 @@ class KeyPointDetector(object):
             result, pred = self.postprocess(inputs, output)
             self.det_times.postprocess_time_s.end()
             self.det_times.img_num += len(batch_image_list)
-
+           
             if visual:
-                if not os.path.exists(self.output_dir):
-                    os.makedirs(self.output_dir)
+                save_dir = increment_path(Path(self.output_dir) / 'keypoint', exist_ok=is_imgDir, mkdir = True) 
+                # if not os.path.exists(self.output_dir):
+                #     os.makedirs(self.output_dir)
                 save_debug_images(self.cfg, inputs,  pred*4, output, 
-                                    self.output_dir)
+                                    save_dir)
 
             results.append(result)
             if visual:
@@ -215,62 +223,25 @@ def create_inputs(imgs, im_info):
     return inputs
 
 
-class PredictConfig_KeyPoint():
-    """set config of preprocess, postprocess and visualize
-    Args:
-        model_dir (str): root path of model.yml
-    """
+# def visualize(image_list, results, visual_thresh=0.6, save_dir='output'):
+#     im_results = {}
+#     for i, image_file in enumerate(image_list):
+#         skeletons = results['keypoint']
+#         scores = results['score']
+#         skeleton = skeletons[i:i + 1]
+#         score = scores[i:i + 1]
+#         im_results['keypoint'] = [skeleton, score]
+#         visualize_pose(
+#             image_file,
+#             im_results,
+#             visual_thresh=visual_thresh,
+#             save_dir=save_dir)
 
-    def __init__(self, model_dir):
-        # parsing Yaml config for Preprocess
-        deploy_file = os.path.join(model_dir, 'infer_cfg.yml')
-        with open(deploy_file) as f:
-            yml_conf = yaml.safe_load(f)
-        self.check_model(yml_conf)
-        self.arch = yml_conf['arch']
-        self.archcls = KEYPOINT_SUPPORT_MODELS[yml_conf['arch']]
-        self.preprocess_infos = yml_conf['Preprocess']
-        self.min_subgraph_size = yml_conf['min_subgraph_size']
-        self.labels = yml_conf['label_list']
-        self.tagmap = False
-        self.use_dynamic_shape = yml_conf['use_dynamic_shape']
-        if 'keypoint_bottomup' == self.archcls:
-            self.tagmap = True
-        self.print_config()
-
-    def check_model(self, yml_conf):
-        """
-        Raises:
-            ValueError: loaded model not in supported model type 
-        """
-        for support_model in KEYPOINT_SUPPORT_MODELS:
-            if support_model in yml_conf['arch']:
-                return True
-        raise ValueError("Unsupported arch: {}, expect {}".format(yml_conf[
-            'arch'], KEYPOINT_SUPPORT_MODELS))
-
-    def print_config(self):
-        print('-----------  Model Configuration -----------')
-        print('%s: %s' % ('Model Arch', self.arch))
-        print('%s: ' % ('Transform Order'))
-        for op_info in self.preprocess_infos:
-            print('--%s: %s' % ('transform op', op_info['type']))
-        print('--------------------------------------------')
-
-
-def visualize(image_list, results, visual_thresh=0.6, save_dir='output'):
-    im_results = {}
-    for i, image_file in enumerate(image_list):
-        skeletons = results['keypoint']
-        scores = results['score']
-        skeleton = skeletons[i:i + 1]
-        score = scores[i:i + 1]
-        im_results['keypoint'] = [skeleton, score]
-        visualize_pose(
-            image_file,
-            im_results,
-            visual_thresh=visual_thresh,
-            save_dir=save_dir)
+def print_arguments(args):
+    print('-----------  Running Arguments -----------')
+    for arg, value in sorted(vars(args).items()):
+        print('%s: %s' % (arg, value))
+    print('------------------------------------------')
 
 
 def main():
@@ -289,9 +260,10 @@ def main():
         output_dir=FLAGS.output_dir,
         use_dark=FLAGS.use_dark)
 
-    dataset = LoadImages(FLAGS.image_file)
-    img_list = get_test_images(FLAGS.image_dir, FLAGS.image_file)
-    detector.predict_image(img_list, FLAGS.run_benchmark, repeats=10)
+    img_list = cv2.imread(FLAGS.image_file)
+    img_list = cv2.cvtColor(img_list, cv2.COLOR_BGR2RGB)
+    img_list = np.array(img_list)[np.newaxis, ...]
+    detector.predict_image(img_list)
     
     detector.det_times.info(average=True)
 
