@@ -75,11 +75,14 @@ class KeyPointDetector(object):
                  use_dark=True):
         self.cfg = self.set_config(model_dir)     
         self.model = get_pose_net(self.cfg, is_train = False)
+        self.model = self.model.cuda()
         self.model.load_state_dict(torch.load(self.cfg.TEST.MODEL_FILE), strict =False)
-        self.model = torch.nn.DataParallel(self.model, device_ids=self.cfg.GPUS).cuda()
+        #self.model = torch.nn.DataParallel(self.model, device_ids=self.cfg.GPUS).cuda()
         self.batch_size = batch_size
         self.det_times = Timer()
         self.output_dir = output_dir
+        self.c = self.batch_size * [0]
+        self.s = self.batch_size * [0]
 
     def set_config(self, model_dir):
         deploy_file = os.path.join(model_dir, 'infer_cfg.yml')
@@ -114,6 +117,7 @@ class KeyPointDetector(object):
         
     def preprocess(self, inputs):
         # Data loading code
+
         normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
         )
@@ -121,22 +125,20 @@ class KeyPointDetector(object):
                 transforms.ToTensor(),
                 normalize,
             ])
-
-        self.c, self.s = self._xywh2cs(0, 0, inputs.shape[2], inputs.shape[1])
-        r = 0
         
+        num_image = len(inputs)
         image_size = np.array(self.cfg.MODEL.IMAGE_SIZE)
-        trans = get_affine_transform(self.c, self.s, r, image_size)
-        
-        num_image = inputs.shape[0]
         input_out = torch.zeros((num_image, 3, int(image_size[1]), int(image_size[0])))
-        for i in range(num_image):        
+        
+        for i in range(num_image):
+            r = 0
+            self.c[i], self.s[i] = self._xywh2cs(0, 0, inputs[i].shape[1], inputs[i].shape[0])
+            trans = get_affine_transform(self.c[i], self.s[i], r, image_size)
             warpAffine_img = cv2.warpAffine(
                 inputs[i],
                 trans,
                 (int(image_size[0]), int(image_size[1])),
                 flags=cv2.INTER_LINEAR)
-
             input_out[i,:,:,:] = transform(warpAffine_img)
 
         return input_out 
@@ -145,7 +147,7 @@ class KeyPointDetector(object):
 
         # postprocess output of predictor
         idx = 0
-        num_samples = inputs.shape[0]
+        num_samples = len(inputs)
         all_preds = np.zeros(
             (num_samples, self.cfg.MODEL.NUM_JOINTS, 3),
             dtype=np.float32
@@ -157,7 +159,6 @@ class KeyPointDetector(object):
 
         all_preds[idx:idx + num_samples, :, 0:2] = preds[:, :, 0:2]
         all_preds[idx:idx + num_samples, :, 2:3] = maxvals
-           
 
         return all_preds, pred
 
@@ -200,8 +201,6 @@ class KeyPointDetector(object):
                                     save_dir)
 
             results.append(result)
-            if visual:
-                print('Test iter {}'.format(i))
         results = self.merge_batch_result(results)
         return results
 
@@ -261,9 +260,12 @@ def main():
         use_dark=FLAGS.use_dark)
 
     img_list = cv2.imread(FLAGS.image_file)
-    img_list = cv2.cvtColor(img_list, cv2.COLOR_BGR2RGB)
-    img_list = np.array(img_list)[np.newaxis, ...]
-    detector.predict_image(img_list)
+    img_list = cv2.cvtColor(img_list, cv2.COLOR_BGR2RGB) 
+    input = []
+    input.append(img_list)
+ #   img_list = np.array(img_list)[np.newaxis, ...]
+
+    detector.predict_image(input)
     
     detector.det_times.info(average=True)
 

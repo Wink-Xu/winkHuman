@@ -17,7 +17,7 @@ MOT:
   tracker_config: deep_sort/configs/deep_sort.yaml
 
 KPT:
-  model_dir: output_inference/dark_hrnet_w32_256x192/
+  model_dir: keypoint/model_dir/
   batch_size: 8
 
 ACTION:

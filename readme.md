@@ -12,7 +12,7 @@ The overall architecture of code refers to https://github.com/PaddlePaddle/Paddl
 # todo list
 1. yolov5训自己的数据集。 和zf对比。（yolo系列（包括yolox）要学会了，到可以被提问的程度。也看下centernet） √ 完成了训练，但是没对比。
 2. pipleline 跑视频 完成跟踪。（deepsort） 代码整理。加注释。   √
-3. 集成HRNet           √ 完成了关键点的单元测试代码。
+3. 集成HRNet           √ 完成了关键点的单元测试代码。 完成了pipleline中增加关键点估计。
 4. 行为识别ST-GCN，成功跑demo，inference。
 5. 集成attribute
 6. 集成ReID

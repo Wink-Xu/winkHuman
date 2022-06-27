@@ -90,17 +90,20 @@ class DataCollector(object):
         reid_res = Result.get('reid')
 
         rects = reid_res['rects'] if reid_res is not None else mot_res['boxes']
-        for idx, mot_item in enumerate(rects):
+        idx = 0
+        for mot_item in rects:
             ids = int(mot_item[4])
+            label = int(mot_item[5])
+            if label != 0:
+                continue
             if ids not in self.collector:
                 self.collector[ids] = copy.deepcopy(self.mots)
             self.collector[ids]["frames"].append(frameid)
-            self.collector[ids]["rects"].append([mot_item[2:]])
+            self.collector[ids]["rects"].append([mot_item[:]])
             if attr_res:
                 self.collector[ids]["attrs"].append(attr_res['output'][idx])
             if kpt_res:
-                self.collector[ids]["kpts"].append(
-                    [kpt_res['keypoint'][0][idx], kpt_res['keypoint'][1][idx]])
+                self.collector[ids]["kpts"].append([kpt_res['keypoint'][0][idx], kpt_res['keypoint'][1][idx]])
             if action_res and (idx + 1) in action_res:
                 self.collector[ids]["actions"].append(action_res[idx + 1])
             else:
@@ -111,6 +114,7 @@ class DataCollector(object):
                     idx])
                 self.collector[ids]["qualities"].append(reid_res['qualities'][
                     idx])
+            idx += 1
 
     def get_res(self):
         return self.collector

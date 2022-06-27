@@ -188,6 +188,59 @@ def get_test_images(infer_dir, infer_img):
 
     return images
 
+def expand_crop(images, rect, expand_ratio=0.3):
+    imgh, imgw, c = images.shape
+    xmin, ymin, xmax, ymax, track_id, label, conf = [int(x) for x in rect]
+    if label != 0:
+        return None, None, None
+    org_rect = [xmin, ymin, xmax, ymax]
+    h_half = (ymax - ymin) * (1 + expand_ratio) / 2.
+    w_half = (xmax - xmin) * (1 + expand_ratio) / 2.
+    if h_half > w_half * 4 / 3:
+        w_half = h_half * 0.75
+    center = [(ymin + ymax) / 2., (xmin + xmax) / 2.]
+    ymin = max(0, int(center[0] - h_half))
+    ymax = min(imgh - 1, int(center[0] + h_half))
+    xmin = max(0, int(center[1] - w_half))
+    xmax = min(imgw - 1, int(center[1] + w_half))
+    return images[ymin:ymax, xmin:xmax, :], [xmin, ymin, xmax, ymax], org_rect
+
+def normal_crop(image, rect):
+    imgh, imgw, c = image.shape
+    xmin, ymin, xmax, ymax, track_id, label, conf = [int(x) for x in rect]
+    org_rect = [xmin, ymin, xmax, ymax]
+    if label != 0:
+        return None, None, None
+    xmin = max(0, xmin)
+    ymin = max(0, ymin)
+    xmax = min(imgw, xmax)
+    ymax = min(imgh, ymax)
+    return image[ymin:ymax, xmin:xmax, :], [xmin, ymin, xmax, ymax], org_rect
+
+
+def crop_image_with_mot(input, mot_res, expand=True):
+    res = mot_res['boxes']
+    crop_res = []
+    new_bboxes = []
+    ori_bboxes = []
+    for box in res:
+        if expand:
+            crop_image, new_bbox, ori_bbox = expand_crop(input, box)
+        else:
+            crop_image, new_bbox, ori_bbox = normal_crop(input, box)
+        if crop_image is not None:
+            crop_res.append(crop_image)
+            new_bboxes.append(new_bbox)
+            ori_bboxes.append(ori_bbox)
+    return crop_res, new_bboxes, ori_bboxes
+
+def translate_to_ori_images(keypoint_result, batch_records):
+    kpts = keypoint_result[:, :, 0:2]
+    scores = keypoint_result[:, :, 2]
+    kpts[..., 0] += batch_records[:, 0:1]
+    kpts[..., 1] += batch_records[:, 1:2]
+    return kpts, scores
+
 
 # def crop_image_with_det(batch_input, det_res, thresh=0.3):
 #     boxes = det_res['boxes']
@@ -211,34 +264,6 @@ def get_test_images(infer_dir, infer_img):
 #     return crop_res
 
 
-# def normal_crop(image, rect):
-#     imgh, imgw, c = image.shape
-#     label, conf, xmin, ymin, xmax, ymax = [int(x) for x in rect.tolist()]
-#     org_rect = [xmin, ymin, xmax, ymax]
-#     if label != 0:
-#         return None, None, None
-#     xmin = max(0, xmin)
-#     ymin = max(0, ymin)
-#     xmax = min(imgw, xmax)
-#     ymax = min(imgh, ymax)
-#     return image[ymin:ymax, xmin:xmax, :], [xmin, ymin, xmax, ymax], org_rect
-
-
-# def crop_image_with_mot(input, mot_res, expand=True):
-#     res = mot_res['boxes']
-#     crop_res = []
-#     new_bboxes = []
-#     ori_bboxes = []
-#     for box in res:
-#         if expand:
-#             crop_image, new_bbox, ori_bbox = expand_crop(input, box[1:])
-#         else:
-#             crop_image, new_bbox, ori_bbox = normal_crop(input, box[1:])
-#         if crop_image is not None:
-#             crop_res.append(crop_image)
-#             new_bboxes.append(new_bbox)
-#             ori_bboxes.append(ori_bbox)
-#     return crop_res, new_bboxes, ori_bboxes
 
 
 # def parse_mot_res(input):
